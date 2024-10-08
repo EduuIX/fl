@@ -13,6 +13,7 @@ from collections import Counter
 import math
 from datetime import datetime
 import random
+from scipy.spatial.distance import directed_hausdorff
 
 # Characteristics for logging
 num_clients = 20
@@ -100,6 +101,7 @@ client_data_indices = split_dataset_by_dirichlet(train_dataset, num_clients, alp
 
 
 # Calcula a distribuição das labels para cada cliente
+clients_labels_distributions = []
 for i, indices in enumerate(client_data_indices):
     # Extrai as labels para os dados de cada cliente
     labels = [train_dataset[idx][1] for idx in indices]
@@ -115,12 +117,14 @@ for i, indices in enumerate(client_data_indices):
     
     # Converte a lista para um array NumPy e remodela para (1, 10)
     distribution_array = np.array(distribution_list).reshape(1, -1)
+
+    clients_labels_distributions.append(distribution_array)
     
     # total_samples = sum(distribution_list)
     # distribution_proportion = distribution_array / total_samples if total_samples > 0 else distribution_array
     
-    # Imprime a distribuição de rótulos para o cliente
-    print(f"Cliente {i+1} - Distribuição de Labels: {distribution_list}")
+# Imprime a distribuição de rótulos para o cliente
+# print(f"Cliente {i+1} - Distribuição de Labels: {clients_labels_distributions}")
     
     # Se estiver usando proporções, imprima a distribuição proporcional
     # print(f"Cliente {i+1} - Distribuição de Labels (Proporção): {distribution_proportion}")
@@ -254,9 +258,7 @@ for round in range(num_rounds):
     round_accuracy = []
     client_models = []
     substituted_clients = {}
-
-    # Keep track of which clients were substituted
-    substituted_clients = {}
+    failed_clients = []
 
     # Check for client failures and activations only in the selected group
     active_selected_clients = []
@@ -264,6 +266,7 @@ for round in range(num_rounds):
         if client_active_status[client_id]:  # Client is currently active
             if random.random() < failure_probability:
                 client_active_status[client_id] = False  # Client fails
+                failed_clients.append(client_id)
                 logging.info(f"Client {client_id + 1} failed in this round.")
             else:
                 active_selected_clients.append(client_id)  # Add to active client list
@@ -272,7 +275,39 @@ for round in range(num_rounds):
             active_selected_clients.append(client_id)  # Add to active client list
             logging.info(f"Client {client_id + 1} rejoins the training in this round.")
 
+
     # Step 2: Check if repair is needed
+    def replace_random():
+        chosen_client = random.choice(available_substitutes)  # Choose a random active non-selected client
+        available_substitutes.remove(chosen_client)  # Remove from the pool to avoid repeated substitution
+        substituted_clients[client_id] = chosen_client  # Track who was substituted by whom
+        logging.info(f"Substituted Client {client_id + 1} with active Client {chosen_client + 1}")
+        client_active_status[chosen_client] = True  # Ensure substitute is active
+        active_selected_clients.append(chosen_client)
+
+
+    def replace_hausdorff():
+        min_metric = float('inf')
+        chosen_client = None
+        labels_dropped = clients_labels_distributions[client_id]
+        
+        for new_client in available_substitutes:
+            labels_new = clients_labels_distributions[new_client]
+            dist1 = directed_hausdorff(labels_dropped, labels_new)[0]
+            dist2 = directed_hausdorff(labels_new, labels_dropped)[0]
+            metric = -max(dist1, dist2)
+
+            if metric < min_metric:
+                min_metric = metric
+                chosen_client = new_client
+
+        available_substitutes.remove(chosen_client)  # Remove from the pool to avoid repeated substitution
+        substituted_clients[client_id] = chosen_client  # Track who was substituted by whom
+        logging.info(f"Substituted Client {client_id + 1} with active Client {chosen_client + 1}")
+        client_active_status[chosen_client] = True  # Ensure substitute is active
+        active_selected_clients.append(chosen_client)
+
+
     if len(active_selected_clients) <= repair_threshold:  # Not enough active clients
         logging.info("Not enough active clients. Initiating minimal repair model.")
 
@@ -282,15 +317,23 @@ for round in range(num_rounds):
             if client_id not in selected_clients and client_active_status[client_id]
         ]
 
+        # print(f'Active_selected_clients: {len(active_selected_clients)}')
+        # print(f'Available_substitutes: {len(available_substitutes)}')
+        # print(f'Failed_Clients: {len(failed_clients)}')
+        
+        # print(f'Active_selected_clients: {active_selected_clients}')
+        # print(f'Available_substitutes: {available_substitutes}')
+        # print(f'Failed_Clients: {failed_clients}')
+        # exit()
+
         # Reactivate failed clients in the selected group by substituting them
+        rc = 1
         for client_id in selected_clients:
             if not client_active_status[client_id] and available_substitutes:  # If the client failed
-                chosen_client = random.choice(available_substitutes)  # Choose a random active non-selected client
-                available_substitutes.remove(chosen_client)  # Remove from the pool to avoid repeated substitution
-                substituted_clients[client_id] = chosen_client  # Track who was substituted by whom
-                logging.info(f"Substituted Client {client_id + 1} with active Client {chosen_client + 1}")
-                client_active_status[chosen_client] = True  # Ensure substitute is active
-                active_selected_clients.append(chosen_client)
+                if rc == 0:
+                    replace_random()
+                elif rc == 1:
+                    replace_husdorff()
 
     # Step 3: Proceed with training only for active selected clients
     for client_id in active_selected_clients:
