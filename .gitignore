@@ -1,0 +1,6 @@
+*.gz
+*.tar.gz
+./data/
+./data/*
+./experiments_logs/
+./experiments_logs/*
